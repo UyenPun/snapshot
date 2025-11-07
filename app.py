@@ -1,20 +1,22 @@
 from flask import Flask, Response, render_template_string
 import cv2
-import time
 import atexit
 import os
 import datetime
+import glob
 
 app = Flask(__name__)
 
-# --- Khởi tạo camera 1 lần ---
-cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
-
-if not cap.isOpened():
-    raise RuntimeError("Không mở được camera. Kiểm tra kết nối webcam!")
-
-# --- Đường dẫn lưu ảnh ---
+# --- Cấu hình ---
+RTSP_URL = "rtsp://admin:123456@192.168.1.100:554/Streaming/Channels/101"
 SAVE_DIR = r"C:\Users\Admin\Desktop\snapshot_demo\static"
+MAX_IMAGES = 20  # 🔹 Giới hạn chỉ giữ 20 ảnh mới nhất
+
+# --- Khởi tạo camera ---
+cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
+if not cap.isOpened():
+    raise RuntimeError("Không mở được camera RTSP. Kiểm tra địa chỉ hoặc kết nối mạng!")
+
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 def cleanup():
@@ -22,6 +24,17 @@ def cleanup():
     cap.release()
 
 atexit.register(cleanup)
+
+def cleanup_old_images():
+    """Xóa ảnh cũ, chỉ giữ lại MAX_IMAGES ảnh mới nhất."""
+    images = sorted(glob.glob(os.path.join(SAVE_DIR, "*.jpg")), key=os.path.getmtime, reverse=True)
+    if len(images) > MAX_IMAGES:
+        for old_file in images[MAX_IMAGES:]:
+            try:
+                os.remove(old_file)
+                print(f"🗑️ Đã xóa ảnh cũ: {old_file}")
+            except Exception as e:
+                print(f"Lỗi khi xóa {old_file}: {e}")
 
 # --- HTML template ---
 HTML_PAGE = """
@@ -36,9 +49,9 @@ HTML_PAGE = """
     </style>
 </head>
 <body>
-    <h1>📸 Snapshot Demo</h1>
+    <h1>📸 Snapshot Demo (RTSP)</h1>
     <img id="snapshot" src="/snapshot" alt="Snapshot">
-    <p>Mỗi 2 giây ảnh sẽ tự cập nhật và tự lưu vào thư mục <b>static</b>.</p>
+    <p>Mỗi 10 giây ảnh sẽ tự cập nhật và tự lưu vào thư mục <b>static</b>.</p>
 
     <script>
         setInterval(() => {
@@ -58,9 +71,8 @@ def index():
 def snapshot():
     ret, frame = cap.read()
     if not ret:
-        return "Không đọc được frame từ camera", 500
+        return "Không đọc được frame từ camera RTSP", 500
 
-    # Encode ảnh thành JPEG
     ret, buffer = cv2.imencode('.jpg', frame)
     if not ret:
         return "Không encode được frame", 500
@@ -69,7 +81,10 @@ def snapshot():
     filename = datetime.datetime.now().strftime("%Y%m%d_%H%M%S.jpg")
     filepath = os.path.join(SAVE_DIR, filename)
     cv2.imwrite(filepath, frame)
-    print(f"Đã lưu ảnh: {filepath}")
+    print(f"💾 Đã lưu ảnh: {filepath}")
+
+    # --- Xóa ảnh cũ ---
+    cleanup_old_images()
 
     return Response(buffer.tobytes(), mimetype='image/jpeg')
 
